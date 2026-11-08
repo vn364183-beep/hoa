@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vườn Tulip Đêm</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: black;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #counter {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #777777;
+            font-size: 16px;
+            pointer-events: none;
+        }
+        #hint {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #666666;
+            font-size: 15px;
+            pointer-events: none;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="counter"></div>
+    <div id="hint">🌷 Click: trồng hoa · Kéo chuột: trồng cả hàng · Chuột phải: pháo hoa 🎆 · SPACE: cả vườn · C: xoá</div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        const MAX_TULIPS = 50;
+        let mouse = { x: -9999, y: -9999, isDown: false };
+        let lastPlant = { x: -999, y: -999 };
+
+        // Helper functions
+        function clamp(x, a = 0.0, b = 1.0) {
+            return Math.max(a, Math.min(b, x));
+        }
+
+        function easeOut(x) {
+            return 1 - Math.pow(1 - x, 3);
+        }
+
+        function easeInOut(x) {
+            return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+        }
+
+        function easeOutBack(x) {
+            const c1 = 1.70158;
+            const c3 = c1 + 1;
+            return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+        }
+
+        function hslToRgb(h, s, l) {
+            let r, g, b;
+            if (s === 0) {
+                r = g = b = l;
+            } else {
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1/6) return p + (q - p) * 6 * t;
+                    if (t < 1/2) return q;
+                    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                r = hue2rgb(p, q, h + 1/3);
+                g = hue2rgb(p, q, h);
+                b = hue2rgb(p, q, h - 1/3);
+            }
+            return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+        }
+
+        function rgbHex(rgb, k = 1.0) {
+            const r = Math.max(0, Math.min(255, Math.floor(rgb[0] * k)));
+            const g = Math.max(0, Math.min(255, Math.floor(rgb[1] * k)));
+            const b = Math.max(0, Math.min(255, Math.floor(rgb[2] * k)));
+            return `rgb(${r}, ${g}, ${b})`;
+        }
+
+        function transformPoints(points, angle, scale, ox, oy) {
+            const c = Math.cos(angle), s = Math.sin(angle);
+            let out = [];
+            for (let p of points) {
+                let x = p[0] * scale;
+                let y = p[1] * scale;
+                out.push([ox + x * c - y * s, oy + x * s + y * c]);
+            }
+            return out;
+        }
+
+        function petalShape(w, h) {
+            return [
+                [0, 0], [w * 0.7, -h * 0.2], [w, -h * 0.55], [w * 0.55, -h * 0.95],
+                [0, -h * 0.82], [-w * 0.55, -h * 0.95], [-w, -h * 0.55], [-w * 0.7, -h * 0.2]
+            ];
+        }
+
+        function drawSmoothPolygon(ctx, points, fillStyle) {
+            if (points.length < 3) return;
+            ctx.beginPath();
+            ctx.moveTo(points[0][0], points[0][1]);
+            for (let i = 0; i < points.length; i++) {
+                let p0 = points[i];
+                let p1 = points[(i + 1) % points.length];
+                let mx = (p0[0] + p1[0]) / 2;
+                let my = (p0[1] + p1[1]) / 2;
+                ctx.quadraticCurveTo(p0[0], p0[1], mx, my);
+            }
+            ctx.fillStyle = fillStyle;
+            ctx.fill();
+        }
+
+        // ======================= Sky: Moon & Stars =======================
+        let stars = [];
+        function makeStars() {
+            stars = [];
+            for (let i = 0; i < 220; i++) {
+                let x = Math.random() * 2000;
+                let y = Math.random() * 800 * Math.random();
+                let r = [0.6, 0.8, 1.0, 1.0, 1.5][Math.floor(Math.random() * 5)];
+                stars.push({ x, y, r, base: Math.random() * 0.7 + 0.3, speed: Math.random() * 3 + 1, ph: Math.random() * 6.28 });
+            }
+        }
+        makeStars();
+
+        function updateAndDrawStars(now) {
+            for (let s of stars) {
+                let k = s.base * (0.55 + 0.45 * Math.sin(now * s.speed + s.ph));
+                ctx.fillStyle = rgbHex([230, 235, 255], k);
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, s.r, 0, Math.tau || Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Moon
+            let mx = canvas.width - 140, my = 110;
+            for (let [r, k] of [[90, 0.04], [70, 0.07], [55, 0.12], [45, 0.2]]) {
+                ctx.fillStyle = rgbHex([200, 210, 255], k);
+                ctx.beginPath(); ctx.arc(mx, my, r, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.fillStyle = "#f4f1de";
+            ctx.beginPath(); ctx.arc(mx, my, 32, 0, Math.PI * 2); ctx.fill();
+            for (let [dx, dy, r] of [[-10, -8, 7], [12, 6, 5], [-4, 14, 4]]) {
+                ctx.fillStyle = "#dcd8c0";
+                ctx.beginPath(); ctx.arc(mx + dx, my + dy, r, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        // ======================= Tulip Class =======================
+        class Tulip {
+            constructor(x, y, hue = null) {
+                this.x = x;
+                this.y = y;
+                this.t = 0.0;
+                this.lean = 0.0;
+                this.phase = Math.random() * Math.PI * 2;
+                this.next_drop = Math.random() * 9 + 5;
+
+                let depth = 0.55 + 0.6 * (y / canvas.height);
+                this.size = (Math.random() * 0.3 + 0.85) * depth;
+                this.h = (Math.random() * 80 + 120) * depth;
+                this.bend = (Math.random() * 50 - 25) * depth;
+
+                hue = hue === null ? Math.random() : hue;
+                let sat = Math.random() * 0.25 + 0.75;
+                let lig = Math.random() * 0.1 + 0.5;
+                this.rgb = hslToRgb(hue, sat, lig);
+                this.c_main = rgbHex(this.rgb);
+                this.c_dark = rgbHex(this.rgb, 0.65);
+                this.c_light = rgbHex(hslToRgb(hue, sat, Math.min(lig * 1.25, 0.82)));
+                this.c_vein = rgbHex(hslToRgb(hue, sat, Math.min(lig * 1.45, 0.9)));
+                
+                let gCol = hslToRgb(0.33 + (Math.random() * 0.08 - 0.04), 0.6, 0.35);
+                this.c_stem = rgbHex(gCol);
+                this.c_leaf = rgbHex(gCol, 1.1);
+                this.c_leaf_dark = rgbHex(gCol, 0.75);
+                this.head = [x, y];
+            }
+
+            step(dt, now) {
+                this.t += dt;
+                let dx = this.head[0] - mouse.x;
+                let dy = this.head[1] - mouse.y;
+                let d = Math.hypot(dx, dy);
+                let target = 0.0;
+                if (d < 160) {
+                    target = (dx >= 0 ? 1 : -1) * (1 - d / 160) * 45 * this.size;
+                }
+                this.lean += (target - this.lean) * Math.min(1.0, dt * 5);
+
+                if (this.t > 3.5) {
+                    this.next_drop -= dt;
+                    if (this.next_drop <= 0) {
+                        this.next_drop = Math.random() * 10 + 6;
+                        falling.push(new FallingPetal(this.head[0], this.head[1] - 15 * this.size, this.rgb, this.size));
+                    }
+                }
+            }
+
+            geometry(now) {
+                let g = easeOut(clamp(this.t / 1.5));
+                let sway = Math.sin(now * 1.5 + this.phase) * 4 * g + this.lean * g;
+                let top_x = this.x + this.bend * g + sway;
+                let top_y = this.y - this.h * g + Math.abs(this.lean) * 0.25 * g;
+                return [g, sway
